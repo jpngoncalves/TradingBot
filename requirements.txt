@@ -1,0 +1,23 @@
+#Binance API
+python-binance
+websocket_client
+TA-Lib
+numpy
+pandas
+asyncio
+nest_asyncio
+wheel
+datetime
+backtrader
+flask
+ccxt
+schedule
+ta
+plot_utils
+sqlalchemy
+python-dotenv
+matplotlib
+strategy
+requests
+#Degiro API
+degiroapi
