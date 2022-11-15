@@ -1,0 +1,16 @@
+#Binance API
+binance
+python-binance
+websocket_client
+websocket-server
+ccxt
+pyproject
+pandas
+#TA-Lib
+ta
+tradingview-ta
+datetime
+requests
+colorama
+#Degiro API
+degiroapi
