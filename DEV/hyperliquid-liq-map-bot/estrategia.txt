@@ -1,0 +1,82 @@
+HL-LIQ-MAP-BOT — Estratégia detalhada
+
+1. Visão "institucional"
+   - Este bot tenta aproximar o tipo de raciocínio de desks profissionais:
+     1) identificar a direcção principal (tendência)
+     2) entrar em pullbacks com confluência de indicadores
+     3) evitar zonas óbvias onde muitos stops vão ser apanhados contra nós
+        (clusters de liquidações) e, idealmente, posicionar-se do lado em que
+        esses stops ajudam o movimento a nosso favor.
+
+2. Tendência e estrutura
+   - EMAs:
+     - `EMA21` (~ 5 horas no 15m)
+     - `EMA55` (~ 13.75 horas)
+     - `EMA233` (~ 2.4 dias)
+   - VWAP:
+     - Calculada sobre o histórico de 15m (podes facilmente adaptar para
+       VWAP diária resetando ao início de sessão se quiseres no futuro).
+   - Regras:
+     - Bullish: `preço > VWAP` e `EMA21 > EMA55 > EMA233`
+     - Bearish: `preço < VWAP` e `EMA21 < EMA55 < EMA233`
+
+3. Pullback de qualidade
+   - RSI:
+     - Usado para evitar entrar demasiado esticado.
+     - LONG: RSI > 45 e a subir.
+     - SHORT: RSI < 55 e a descer.
+   - MACD (histograma):
+     - LONG: macd_hist > 0 e a melhorar (hist_actual > hist_prev)
+     - SHORT: macd_hist < 0 e a piorar.
+   - StochRSI:
+     - LONG: `K_prev < 0.2` e `K_actual > K_prev` (sair de oversold)
+     - SHORT: `K_prev > 0.8` e `K_actual < K_prev` (sair de overbought).
+
+4. Liquidity Map (CoinGlass)
+   - O módulo CoinGlass chama o endpoint `/api/futures/liquidation/heatmap/model2`.
+   - Filtra níveis de preço num intervalo `±liq_window_pct` em torno do preço
+     actual.
+   - Constrói métricas:
+     - `long_above`, `short_above`, `long_below`, `short_below`
+     - `net_short_above = short_above - long_above`
+     - `net_long_below  = long_below - short_below`
+   - Interpretação:
+     - LONG: `net_short_above > 0` ⇒ há mais shorts pendurados acima, o que
+       favorece squeezes a nosso favor.
+     - SHORT: `net_long_below > 0` ⇒ há mais longs pendurados abaixo, o que
+       favorece cascatas de liquidações.
+
+5. Gestor de risco
+   - ATR(14) dimensiona a distância até ao SL.
+   - `risk_pct` define quanto do account queremos arriscar entre entry e SL.
+   - Tamanho da posição `size` calcula-se assumindo alavancagem configurada,
+     mas o código usa a fórmula clássica `size ~ risk_usd / (dist_pct * price)`.
+
+6. Execução
+   - As ordens são de mercado, simuladas com slippage conservador:
+     - 0.15% para entrada, 0.2% para saída.
+   - A lógica de SL/TP é gerida no lado do bot (não como ordem stop/limit
+     nativa); se quiseres, numa versão seguinte podemos enviar ordens
+     stop-limit/TP limit na própria Hyperliquid.
+
+7. Comportamento sem CoinGlass
+   - Se não houver API key válida ou o endpoint falhar, o módulo de
+     liquidações devolve `enabled=False` e o motor de sinais ignora o filtro
+     de liquidações.
+   - Na prática, o bot torna-se um trend-following com pullbacks (EMA/VWAP +
+     RSI/MACD/StochRSI + ATR), que já é uma abordagem utilizada por muitos
+     traders profissionais.
+
+8. Sugestões de parâmetros
+   - `risk_pct`: 0.5–1.0% por trade em mainnet é razoável.
+   - `leverage`: 3–7x para BTC/ETH, maior apenas em alts se estiveres
+     confortável.
+   - `liq_window_pct`: 0.03–0.07 (3–7%) é um bom ponto de partida para BTC.
+   - `atr_mult`: 1.5–2.0 consoante o ruído do par.
+   - `rr`: 1.5–2.5, dependendo se preferes hit-rate maior ou R:R maior.
+
+9. Próximos passos
+   - Integrar backtest offline com dados históricos BTC perp + CoinGlass
+     (open interest, funding, liquidações) para calibrar estes parâmetros.
+   - Adicionar gestão de regime (por ex. reduzir size quando o funding está
+     extremamente positivo/negativo ou quando o open interest explode).
