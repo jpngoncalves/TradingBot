@@ -20,9 +20,10 @@
   "lookback": 400,
 
   "liq_window_pct": 0.05,
-  "coinglass_base_url": "https://open-api-v4.coinglass.com",
-  "coinglass_symbol": "BTC",
-  "coinglass_api_key": "INSERE_AQUI_O_TEU_API_KEY_OU USA VARIÁVEL DE AMBIENTE COINGLASS_API_KEY",
+
+  "coinalyze_base_url": "https://api.coinalyze.net/v1",
+  "coinalyze_symbol": "BTCUSDT_PERP.A",
+  "coinalyze_api_key": "579fef1e-5f55-405f-8ed3-fca9d4bd6b93",
 
   "log_level": "INFO"
 }
