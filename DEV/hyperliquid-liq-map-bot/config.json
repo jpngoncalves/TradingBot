@@ -19,11 +19,5 @@
   "enable_shorts": false,
   "lookback": 400,
 
-  "liq_window_pct": 0.05,
-
-  "coinalyze_base_url": "https://api.coinalyze.net/v1",
-  "coinalyze_symbol": "BTCUSDT_PERP.A",
-  "coinalyze_api_key": "579fef1e-5f55-405f-8ed3-fca9d4bd6b93",
-
   "log_level": "INFO"
 }
