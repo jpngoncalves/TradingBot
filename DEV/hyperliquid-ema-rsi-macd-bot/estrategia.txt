@@ -1,0 +1,48 @@
+HL-EMA-RSI-MACD-BOT — Estratégia detalhada
+
+1. Contexto
+   - Bot em 15m inspirado no script de 2022 (EMA 13/144 + RSI + MACD),
+     agora adaptado para a API da Hyperliquid e com gestão de risco robusta.
+
+2. Indicadores
+   - EMA_ST (13): média móvel exponencial curta.
+   - EMA_LT (144): média móvel exponencial longa.
+   - RSI(14): força relativa, usado para detectar oversold/overbought.
+   - MACD(12,26,9): diferença entre EMAs 12 e 26, com signal 9; usamos o histograma
+     para ver mudança de momentum.
+   - StochRSI(14,3,3): oscilador de RSI normalizado [0,1]; procuramos saídas de
+     oversold (<0.2) e overbought (>0.8).
+   - ATR(14): amplitude média verdadeira; serve para dimensionar o SL/TP.
+
+3. Trigger (contexto bearish antes do LONG)
+   - Para entrar comprado queremos evidência de que o mercado esteve sob pressão
+     vendedora durante algum tempo:
+     - Calcula-se `cond_below = EMA13 < EMA144`.
+     - `trigger_long` é verdadeiro se `cond_below` for verdadeiro em pelo menos
+       uma das últimas `lags` velas (5 por defeito).
+
+4. Regras de Entrada LONG
+   - Condições necessárias simultaneamente:
+     1. `trigger_long` = True (EMA13 esteve abaixo de EMA144 recentemente).
+     2. `EMA13 < EMA144` na vela actual.
+     3. `RSI(14) < rsi_oversold` (30 por defeito).
+     4. MACD hist < 0 e hist actual > hist anterior (momentum negativo a perder
+        força).
+     5. StochRSI: `K_prev < 0.2` e `K_actual > K_prev` (sair de oversold).
+   - Quando tudo isto acontece, o bot gera um sinal LONG com SL/TP baseados em ATR.
+
+5. Gestão de Risco e Saídas
+   - Calcula-se ATR(14) na última vela.
+   - `risk = atr_mult × ATR` (atr_mult = 1.5 por defeito).
+   - `SL = entry − risk`.
+   - `TP = entry + risk × rr` (rr = 2.0 → R:R ≈ 1:2).
+   - O tamanho da posição é calculado para que a perda entre entry e SL
+     represente `risk_pct`% do account.
+   - Enquanto a posição estiver aberta, o bot monitoriza o preço; se tocar SL ou
+     TP, envia ordem reduce-only para fechar.
+
+6. Venda / Encerramento
+   - Neste primeiro passo o foco está em LONGs; o fecho é guiado por SL/TP.
+   - Se quiseres, numa versão seguinte podemos adicionar também SHORTs com
+     condições simétricas (trigger_top, RSI>70, MACD hist a piorar, StochRSI a
+     sair de overbought).

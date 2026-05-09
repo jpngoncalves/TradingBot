@@ -1,0 +1,19 @@
+{
+  "account_address": "0xSEU_ENDERECO_PUBLICO_AQUI",
+  "secret_key": "0xSUA_CHAVE_PRIVADA_API_AQUI",
+  "testnet": true,
+  "symbol": "BTC",
+  "timeframe": "15m",
+  "leverage": 5,
+  "risk_pct": 1.0,
+  "ema_st": 13,
+  "ema_lt": 144,
+  "rsi_length": 14,
+  "rsi_overbought": 70,
+  "rsi_oversold": 30,
+  "lags": 5,
+  "atr_mult": 1.5,
+  "rr": 2.0,
+  "lookback": 300,
+  "log_level": "INFO"
+}
