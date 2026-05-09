@@ -4,7 +4,7 @@ Timeframe: 15m (intraday)
 Mercado: Futuros perpétuos (ex.: BTC-PERP na Hyperliquid)
 Alavancagem típica: 5–10× (configurável)
 
-Estratégia baseia-se em Smart Money Concepts + filtros de tendência e liquidez:
+Estratégia baseia-se em Smart Money Concepts + filtros de tendência, liquidez e osciladores (RSI, MACD, StochRSI):
 
 1. Filtro de Tendência (EMAs)
    - LONG apenas quando EMA8 > EMA21 > EMA55 e preço acima da EMA233 (macro bullish).
@@ -29,29 +29,42 @@ Estratégia baseia-se em Smart Money Concepts + filtros de tendência e liquidez
      - BB oversold (touch banda inferior) favorece LONG em tendência bullish.
      - BB overbought (touch banda superior) favorece SHORT em tendência bearish.
 
-5. Regras de Entrada
+5. Osciladores (NOVO)
+   - RSI(14):
+     - Bullish quando sai de zona baixa (RSI_prev < 40, RSI_actual 30–60 e a subir).
+     - Bearish quando sai de zona alta (RSI_prev > 60, RSI_actual 40–70 e a descer).
+   - MACD(12,26,9):
+     - Bullish quando o histograma cruza de negativo para positivo.
+     - Bearish quando o histograma cruza de positivo para negativo.
+   - StochRSI(14,3,3):
+     - Bullish quando %K cruza de <0.2 para cima e está acima de %D.
+     - Bearish quando %K cruza de >0.8 para baixo e está abaixo de %D.
+
+6. Regras de Entrada
    LONG:
    - EMA8 > EMA21 > EMA55.
    - PSAR abaixo do preço.
    - Preço acima do VWAP.
-   - E ainda: BOS/CHoCH bullish OU preço num OB/FVG bullish OU BB oversold.
+   - Estrutura: BOS/CHoCH bullish OU preço em OB/FVG bullish OU BB oversold.
+   - Osciladores: pelo menos 2 dos 3 (RSI bullish, MACD bullish, StochRSI bullish).
 
    SHORT:
    - EMA8 < EMA21 < EMA55.
    - PSAR acima do preço.
    - Preço abaixo do VWAP.
-   - E ainda: BOS/CHoCH bearish OU preço num OB/FVG bearish OU BB overbought.
+   - Estrutura: BOS/CHoCH bearish OU preço em OB/FVG bearish OU BB overbought.
+   - Osciladores: pelo menos 2 dos 3 (RSI bearish, MACD bearish, StochRSI bearish).
 
-6. Gestão de Risco
+7. Gestão de Risco
    - SL = ATR(14) × 1.5 a partir do preço de entrada.
    - TP = SL × 2.0 (R:R mínimo 1:2).
    - Tamanho da posição calculado para arriscar apenas "risk_pct"% do account por trade.
    - Máx. 1 posição activa por símbolo.
 
-7. Lógica Operacional
+8. Lógica Operacional
    - A cada nova vela de 15m:
      1. Faz pull de 300 candles via API.
-     2. Calcula todos os indicadores.
+     2. Calcula todos os indicadores (EMAs, VWAP, BB, PSAR, RSI, MACD, StochRSI).
      3. Se há posição aberta, gere SL/TP; se atingido, fecha.
-     4. Se não há posição e há sinal confluente, abre posição com tamanho calculado.
+     4. Se não há posição e há sinal confluente (incluindo osciladores), abre posição com tamanho calculado.
    - O bot corre em loop contínuo, sincronizado às velas.

@@ -2,9 +2,9 @@
 """
 =============================================================
   HL-SMC-BOT  |  Hyperliquid Futures Trading Bot
-  Estratégia  :  Smart Money Concepts (SMC) + EMA Trend Filter
+  Estratégia  :  Smart Money Concepts (SMC) + EMA Trend + RSI/MACD/StochRSI
   Autor       :  DEV / jpngoncalves
-  Versão      :  1.0.0
+  Versão      :  1.1.0
   Timeframe   :  15m (curto/médio prazo)
 =============================================================
 
@@ -17,6 +17,10 @@ LONG quando:
   4. Preço entra em Order Block bullish ou FVG bullish
   5. Preço acima do VWAP   (filtro institucional)
   6. BB: preço tocou banda inferior (oversold local)
+  7. Pelo menos 2 destes 3 a favor do bull:
+       - RSI(14) a sair de zona baixa (30–60, inclinado para cima)
+       - MACD(12,26,9) histograma a cruzar para positivo
+       - StochRSI(14,3,3) a sair de <0.2 para cima
 
 SHORT quando:
   1. EMA8 < EMA21 < EMA55  (tendência bearish confirmada)
@@ -25,6 +29,10 @@ SHORT quando:
   4. Preço entra em Order Block bearish ou FVG bearish
   5. Preço abaixo do VWAP  (filtro institucional)
   6. BB: preço tocou banda superior (overbought local)
+  7. Pelo menos 2 destes 3 a favor do bear:
+       - RSI(14) a sair de zona alta (70–40, inclinado para baixo)
+       - MACD(12,26,9) histograma a cruzar para negativo
+       - StochRSI(14,3,3) a sair de >0.8 para baixo
 
 GESTÃO DE RISCO
 ---------------
@@ -143,6 +151,56 @@ def vwap(closes, highs, lows, volumes):
     cum_vol = np.cumsum(volumes)
     cum_pv  = np.cumsum(hlc3 * volumes)
     return cum_pv / np.where(cum_vol == 0, 1, cum_vol)
+
+
+def rsi(series: np.ndarray, period: int = 14) -> np.ndarray:
+    """Classic RSI."""
+    delta = np.diff(series)
+    up    = np.where(delta > 0, delta, 0.0)
+    down  = np.where(delta < 0, -delta, 0.0)
+    roll_up  = np.empty_like(series)
+    roll_down= np.empty_like(series)
+    roll_up[:period]   = 0
+    roll_down[:period] = 0
+    roll_up[period]    = np.mean(up[:period])
+    roll_down[period]  = np.mean(down[:period])
+    for i in range(period + 1, len(series)):
+        roll_up[i]   = (roll_up[i-1] * (period - 1) + up[i-1]) / period
+        roll_down[i] = (roll_down[i-1] * (period - 1) + down[i-1]) / period
+    rs  = np.where(roll_down == 0, np.inf, roll_up / roll_down)
+    rsi = 100 - (100 / (1 + rs))
+    rsi[:period] = np.nan
+    return rsi
+
+
+def macd(series: np.ndarray, fast: int = 12, slow: int = 26, signal: int = 9):
+    """MACD line, signal line, histogram."""
+    ema_fast = ema(series, fast)
+    ema_slow = ema(series, slow)
+    macd_line = ema_fast - ema_slow
+    signal_line = ema(macd_line, signal)
+    hist = macd_line - signal_line
+    return macd_line, signal_line, hist
+
+
+def stoch_rsi(series: np.ndarray, rsi_length: int = 14, stoch_length: int = 14,
+              k: int = 3, d: int = 3):
+    """StochRSI (returns %K, %D in [0,1])."""
+    r = rsi(series, rsi_length)
+    out_k = np.full_like(series, np.nan, dtype=float)
+    out_d = np.full_like(series, np.nan, dtype=float)
+    for i in range(stoch_length, len(series)):
+        window = r[i - stoch_length + 1:i + 1]
+        r_min  = np.nanmin(window)
+        r_max  = np.nanmax(window)
+        if r_max - r_min == 0:
+            k_val = 0.5
+        else:
+            k_val = (r[i] - r_min) / (r_max - r_min)
+        out_k[i] = k_val
+        if i >= stoch_length + k - 1:
+            out_d[i] = np.nanmean(out_k[i - k + 1:i + 1])
+    return out_k, out_d
 
 
 def detect_swing_points(highs, lows, lookback: int = 50):
@@ -346,7 +404,7 @@ class HLClient:
 #  SIGNAL ENGINE
 # ─────────────────────────────────────────
 class SignalEngine:
-    """Gera sinais LONG / SHORT / HOLD com base na estratégia SMC+EMA."""
+    """Gera sinais LONG / SHORT / HOLD com base na estratégia SMC+EMA+Osciladores."""
 
     def __init__(self, cfg: dict):
         self.cfg = cfg
@@ -354,7 +412,7 @@ class SignalEngine:
     def analyse(self, d: dict) -> dict:
         o, h, l, c, v = d["open"], d["high"], d["low"], d["close"], d["volume"]
         n = len(c)
-        if n < 240:
+        if n < 260:
             return {"signal": 0, "reason": "dados insuficientes"}
 
         e8   = ema(c, self.cfg["ema_fast"])
@@ -364,6 +422,9 @@ class SignalEngine:
         bb_b, bb_u, bb_l = bollinger_bands(c, self.cfg["bb_length"], self.cfg["bb_std"])
         psar_arr, psar_bull = psar(h, l)
         vwap_arr   = vwap(c, h, l, v)
+        rsi_arr    = rsi(c, 14)
+        macd_line, macd_signal, macd_hist = macd(c, 12, 26, 9)
+        stoch_k, stoch_d = stoch_rsi(c, 14, 14, 3, 3)
         atr_val    = atr(h, l, c, 14)
         swing_h, swing_l = detect_swing_points(h, l, self.cfg["swing_lookback"])
         struct_brk = detect_structure_break(c, swing_h, swing_l)
@@ -391,11 +452,33 @@ class SignalEngine:
         in_bull_zone = in_bull_ob or in_bull_fvg or bb_oversold
         in_bear_zone = in_bear_ob or in_bear_fvg or bb_overbought
 
+        # Osciladores
+        rsi_val  = rsi_arr[-1]
+        rsi_prev = rsi_arr[-2]
+        macd_h   = macd_hist[-1]
+        macd_prev= macd_hist[-2]
+        k_val    = stoch_k[-1]
+        k_prev   = stoch_k[-2]
+        d_val    = stoch_d[-1]
+
+        rsi_bull  = rsi_prev < 40 and 30 <= rsi_val <= 60 and rsi_val > rsi_prev
+        rsi_bear  = rsi_prev > 60 and 40 <= rsi_val <= 70 and rsi_val < rsi_prev
+
+        macd_bull = macd_prev <= 0 and macd_h > 0
+        macd_bear = macd_prev >= 0 and macd_h < 0
+
+        stoch_bull = k_prev < 0.2 and k_val > 0.2 and k_val > d_val
+        stoch_bear = k_prev > 0.8 and k_val < 0.8 and k_val < d_val
+
+        bull_count = sum([rsi_bull, macd_bull, stoch_bull])
+        bear_count = sum([rsi_bear, macd_bear, stoch_bear])
+
         long_cond = (
             trend_bull
             and psar_bullish
             and above_vwap
             and (struct_brk == 1 or in_bull_zone)
+            and bull_count >= 2
         )
 
         short_cond = (
@@ -403,6 +486,7 @@ class SignalEngine:
             and psar_bearish
             and below_vwap
             and (struct_brk == -1 or in_bear_zone)
+            and bear_count >= 2
         )
 
         sl_dist = atr_val * 1.5
@@ -417,6 +501,9 @@ class SignalEngine:
             if in_bull_ob:    reasons.append("Order Block bullish")
             if in_bull_fvg:   reasons.append("FVG bullish")
             if bb_oversold:   reasons.append("BB oversold")
+            if rsi_bull:      reasons.append("RSI bullish")
+            if macd_bull:     reasons.append("MACD bullish")
+            if stoch_bull:    reasons.append("StochRSI bullish")
             return {
                 "signal":  1,
                 "reason":  " | ".join(reasons),
@@ -434,6 +521,9 @@ class SignalEngine:
             if in_bear_ob:     reasons.append("Order Block bearish")
             if in_bear_fvg:    reasons.append("FVG bearish")
             if bb_overbought:  reasons.append("BB overbought")
+            if rsi_bear:       reasons.append("RSI bearish")
+            if macd_bear:      reasons.append("MACD bearish")
+            if stoch_bear:     reasons.append("StochRSI bearish")
             return {
                 "signal": -1,
                 "reason": " | ".join(reasons),
@@ -504,7 +594,7 @@ class SMCBot:
         log.info(f"── Tick {ts} ──────────────────────────")
 
         data = self.hl.get_candles(CFG["timeframe"], limit=300)
-        if len(data["close"]) < 240:
+        if len(data["close"]) < 260:
             log.warning("Candles insuficientes, a aguardar...")
             return
 
