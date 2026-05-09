@@ -1,0 +1,50 @@
+HL-STOCH-RSI-MACD-BOT — Hyperliquid Futures Trading Bot
+
+## Estratégia
+Baseada no vídeo "Trading bot — Stochastics Slow, RSI, MACD" mas adaptada para
+futuros perpétuos na Hyperliquid.
+
+### Timeframe
+- Principal: **5m** (scalping / intraday)
+- Mercados: perps (ex.: BTC-PERP, ETH-PERP)
+
+### Indicadores
+- **EMAs**: 8, 21, 55 → filtro de tendência
+- **VWAP**: filtro institucional (acima = bias long, abaixo = bias short)
+- **Stochastic Slow**: %K, %D com (14, 3, 3)
+- **RSI(14)**
+- **MACD(12,26,9)** (histograma)
+
+### Regras de entrada
+LONG:
+1. Tendência bullish: EMA8 > EMA21 > EMA55.
+2. Preço acima do VWAP.
+3. Stoch Slow (%K e %D) esteve <20 (oversold) em pelo menos 1 das últimas `stoch_lags` velas.
+4. Actualmente %K e %D estão entre 20 e 80.
+5. RSI(14) > 50 e a subir vs. vela anterior.
+6. MACD histograma cruza de negativo para positivo.
+
+SHORT (simétrico):
+1. Tendência bearish: EMA8 < EMA21 < EMA55.
+2. Preço abaixo do VWAP.
+3. Stoch Slow (%K e %D) esteve >80 (overbought) em pelo menos 1 das últimas `stoch_lags` velas.
+4. Actualmente %K e %D estão entre 20 e 80.
+5. RSI(14) < 50 e a descer vs. vela anterior.
+6. MACD histograma cruza de positivo para negativo.
+
+### Gestão de risco
+- `sl_mult`: multiplicador de Stop Loss relativo ao preço de entrada.
+  - Ex.: 0.99 num LONG → SL a ≈ -1%.
+- `tp_mult`: multiplicador de Take Profit.
+  - Ex.: 1.02 num LONG → TP a ≈ +2%.
+- `risk_pct`: % do account em risco por trade (tamanho calculado em função da distância até ao SL).
+- Apenas **1 posição activa** por símbolo.
+
+### Funcionamento do bot
+1. A cada nova vela de 5m:
+   - Busca ~200 candles via API Hyperliquid.
+   - Calcula EMAs, VWAP, RSI, MACD, Stoch Slow.
+   - Se existe posição activa, gere SL/TP e fecha quando um é atingido.
+   - Se não existe posição e há sinal de LONG/SHORT de acordo com as regras, abre posição
+     de mercado com tamanho calculado pelo `risk_pct`.
+2. O bot corre em loop contínuo, sincronizado às velas (sleep até ao próximo candle).

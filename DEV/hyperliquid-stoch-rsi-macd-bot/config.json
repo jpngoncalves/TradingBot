@@ -1,0 +1,21 @@
+{
+  "account_address": "0xSEU_ENDERECO_PUBLICO_AQUI",
+  "secret_key": "0xSUA_CHAVE_PRIVADA_API_AQUI",
+  "testnet": true,
+  "symbol": "BTC",
+  "timeframe": "5m",
+  "leverage": 5,
+  "risk_pct": 1.0,
+  "ema_fast": 8,
+  "ema_slow": 21,
+  "ema_trend": 55,
+  "rsi_length": 14,
+  "stoch_k": 14,
+  "stoch_d": 3,
+  "stoch_smooth": 3,
+  "stoch_lags": 25,
+  "sl_mult": 0.99,
+  "tp_mult": 1.02,
+  "lookback": 200,
+  "log_level": "INFO"
+}
