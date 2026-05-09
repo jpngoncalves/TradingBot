@@ -1,0 +1,47 @@
+# ========================
+# SEGREDOS — NUNCA COMMITAR
+# ========================
+config.json
+**/config.json
+*.env
+.env
+.env.*
+secrets.json
+
+# ========================
+# PYTHON
+# ========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ========================
+# AMBIENTE VIRTUAL
+# ========================
+venv/
+.venv/
+env/
+.env/
+
+# ========================
+# LOGS
+# ========================
+logs/
+*.log
+
+# ========================
+# VS CODE
+# ========================
+.vscode/
+
+# ========================
+# SISTEMA OPERATIVO
+# ========================
+.DS_Store
+Thumbs.db
