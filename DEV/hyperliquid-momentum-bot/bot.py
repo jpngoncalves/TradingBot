@@ -78,11 +78,28 @@ log = logging.getLogger("HL-MOMENTUM-BOT")
 # ---------------------------------------------------------------------------
 
 def calc_ema(series: np.ndarray, period: int) -> np.ndarray:
-    k = 2 / (period + 1)
+    """
+    EMA seeded on the first valid (non-NaN) window of `period` values.
+    This is critical for calc_macd: the MACD line has leading NaNs (first
+    `slow-1` values), so the signal EMA must skip them and seed correctly.
+    """
     out = np.full(len(series), np.nan, dtype=float)
-    out[period - 1] = np.mean(series[:period])
-    for i in range(period, len(series)):
-        out[i] = series[i] * k + out[i - 1] * (1 - k)
+    # Find first index where we have `period` consecutive non-NaN values
+    valid = np.where(~np.isnan(series))[0]
+    if len(valid) < period:
+        return out
+    start = valid[0]
+    seed_end = start + period
+    if seed_end > len(series):
+        return out
+    # Seed: simple mean of first `period` valid values
+    out[seed_end - 1] = np.mean(series[start:seed_end])
+    k = 2.0 / (period + 1)
+    for i in range(seed_end, len(series)):
+        if np.isnan(series[i]):
+            out[i] = np.nan
+        else:
+            out[i] = series[i] * k + out[i - 1] * (1 - k)
     return out
 
 
@@ -108,8 +125,18 @@ def calc_rsi(series: np.ndarray, period: int = 14) -> np.ndarray:
 def calc_macd(
     series: np.ndarray, fast: int = 12, slow: int = 26, signal: int = 9
 ) -> tuple:
-    macd_line = calc_ema(series, fast) - calc_ema(series, slow)
-    signal_line = calc_ema(macd_line, signal)
+    """
+    MACD with correct NaN-aware signal EMA.
+
+    The MACD line has NaN for the first (slow-1) bars. Passing it directly
+    to calc_ema would seed the signal on a NaN value and propagate NaN
+    forever. calc_ema now handles leading NaNs gracefully, so this is
+    automatically resolved — but we keep the explicit check for safety.
+    """
+    ema_fast = calc_ema(series, fast)
+    ema_slow = calc_ema(series, slow)
+    macd_line = ema_fast - ema_slow          # NaN for first (slow-1) bars
+    signal_line = calc_ema(macd_line, signal) # calc_ema skips leading NaNs
     histogram = macd_line - signal_line
     return macd_line, signal_line, histogram
 
@@ -161,10 +188,10 @@ def compute_indicators(data: Dict[str, np.ndarray], cfg: Dict[str, Any]) -> Dict
     closes = data["close"]
     volumes = data["volume"]
 
-    e8 = calc_ema(closes, cfg["ema_8"])
-    e21 = calc_ema(closes, cfg["ema_21"])
-    e55 = calc_ema(closes, cfg["ema_55"])
-    e89 = calc_ema(closes, cfg["ema_89"])
+    e8   = calc_ema(closes, cfg["ema_8"])
+    e21  = calc_ema(closes, cfg["ema_21"])
+    e55  = calc_ema(closes, cfg["ema_55"])
+    e89  = calc_ema(closes, cfg["ema_89"])
     e233 = calc_ema(closes, cfg["ema_233"])
     rsi_values = calc_rsi(closes, cfg["rsi_length"])
     _, _, macd_hist = calc_macd(closes, 12, 26, 9)
@@ -173,20 +200,20 @@ def compute_indicators(data: Dict[str, np.ndarray], cfg: Dict[str, Any]) -> Dict
     vwap_values = calc_vwap(highs, lows, closes, volumes)
 
     return {
-        "price": float(closes[-1]),
-        "ema_8": float(e8[-1]),
-        "ema_21": float(e21[-1]),
-        "ema_55": float(e55[-1]),
-        "ema_89": float(e89[-1]),
-        "ema_233": float(e233[-1]),
-        "rsi": float(rsi_values[-1]),
-        "rsi_prev": float(rsi_values[-2]),
-        "macd_hist": float(macd_hist[-1]),
+        "price":          float(closes[-1]),
+        "ema_8":          float(e8[-1]),
+        "ema_21":         float(e21[-1]),
+        "ema_55":         float(e55[-1]),
+        "ema_89":         float(e89[-1]),
+        "ema_233":        float(e233[-1]),
+        "rsi":            float(rsi_values[-1]),
+        "rsi_prev":       float(rsi_values[-2]),
+        "macd_hist":      float(macd_hist[-1]),
         "macd_hist_prev": float(macd_hist[-2]),
-        "stoch_k": float(stoch_k[-1]),
-        "stoch_k_prev": float(stoch_k[-2]),
-        "atr": float(atr_values[-1]),
-        "vwap": float(vwap_values[-1]),
+        "stoch_k":        float(stoch_k[-1]),
+        "stoch_k_prev":   float(stoch_k[-2]),
+        "atr":            float(atr_values[-1]),
+        "vwap":           float(vwap_values[-1]),
     }
 
 
@@ -201,18 +228,18 @@ def evaluate_cascade(ind: Dict[str, Any]) -> tuple:
     e8, e21, e55, e89, e233 = ind["ema_8"], ind["ema_21"], ind["ema_55"], ind["ema_89"], ind["ema_233"]
 
     bull_links = [
-        (p > vw,      f"{p:.2f} > VWAP {vw:.2f}"),
-        (e8 > e21,    f"EMA8 {e8:.2f} > EMA21 {e21:.2f}"),
-        (e21 > e55,   f"EMA21 {e21:.2f} > EMA55 {e55:.2f}"),
-        (e55 > e89,   f"EMA55 {e55:.2f} > EMA89 {e89:.2f}"),
-        (e89 > e233,  f"EMA89 {e89:.2f} > EMA233 {e233:.2f}"),
+        (p > vw,     f"{p:.2f} > VWAP {vw:.2f}"),
+        (e8 > e21,   f"EMA8 {e8:.2f} > EMA21 {e21:.2f}"),
+        (e21 > e55,  f"EMA21 {e21:.2f} > EMA55 {e55:.2f}"),
+        (e55 > e89,  f"EMA55 {e55:.2f} > EMA89 {e89:.2f}"),
+        (e89 > e233, f"EMA89 {e89:.2f} > EMA233 {e233:.2f}"),
     ]
     bear_links = [
-        (p < vw,      f"{p:.2f} < VWAP {vw:.2f}"),
-        (e8 < e21,    f"EMA8 {e8:.2f} < EMA21 {e21:.2f}"),
-        (e21 < e55,   f"EMA21 {e21:.2f} < EMA55 {e55:.2f}"),
-        (e55 < e89,   f"EMA55 {e55:.2f} < EMA89 {e89:.2f}"),
-        (e89 < e233,  f"EMA89 {e89:.2f} < EMA233 {e233:.2f}"),
+        (p < vw,     f"{p:.2f} < VWAP {vw:.2f}"),
+        (e8 < e21,   f"EMA8 {e8:.2f} < EMA21 {e21:.2f}"),
+        (e21 < e55,  f"EMA21 {e21:.2f} < EMA55 {e55:.2f}"),
+        (e55 < e89,  f"EMA55 {e55:.2f} < EMA89 {e89:.2f}"),
+        (e89 < e233, f"EMA89 {e89:.2f} < EMA233 {e233:.2f}"),
     ]
     bull_ok = all(ok for ok, _ in bull_links)
     bear_ok = all(ok for ok, _ in bear_links)
@@ -225,11 +252,12 @@ def evaluate_cascade(ind: Dict[str, Any]) -> tuple:
 
 def print_monitor(
     ind: Dict[str, Any],
+    live_price: float,
     position: Optional[Dict],
     cfg: Dict[str, Any],
     next_candle_in: float,
 ) -> None:
-    p = ind["price"]
+    p = ind["price"]       # last closed candle close
     vw = ind["vwap"]
     e8, e21, e55, e89, e233 = ind["ema_8"], ind["ema_21"], ind["ema_55"], ind["ema_89"], ind["ema_233"]
     r = ind["rsi"]
@@ -255,16 +283,20 @@ def print_monitor(
     l4 = tick(bull_links[3][0])
     l5 = tick(bull_links[4][0])
 
-    rsi_ok = tick(r > 45 and r > ind["rsi_prev"])
-    macd_ok = tick(mh > 0 and mh > ind["macd_hist_prev"])
+    macd_valid = not math.isnan(mh) and not math.isnan(ind["macd_hist_prev"])
+    rsi_ok   = tick(r > 45 and r > ind["rsi_prev"])
+    macd_ok  = tick(macd_valid and mh > 0 and mh > ind["macd_hist_prev"])
     stoch_ok = tick(ind["stoch_k_prev"] < 0.2 and sk > ind["stoch_k_prev"])
+
+    macd_str      = f"{mh:.5f}" if macd_valid else "loading..."
+    macd_prev_str = f"{ind['macd_hist_prev']:.5f}" if macd_valid else "loading..."
 
     all_long = bull_ok and rsi_ok == "\u2705" and macd_ok == "\u2705" and stoch_ok == "\u2705"
     signal_str = "\u26a1 LONG SIGNAL DETECTED!" if all_long else "   Waiting for signal..."
 
     position_str = "None"
     if position:
-        pnl = p - position["entry"] if position["side"] == "long" else position["entry"] - p
+        pnl = live_price - position["entry"] if position["side"] == "long" else position["entry"] - live_price
         position_str = (
             f"{position['side'].upper()} | entry={position['entry']} "
             f"| size={position['size']} | PnL dist={pnl:+.2f}"
@@ -276,7 +308,8 @@ def print_monitor(
 \u250c{chr(9472)*61}\u2510
 \u2502  HL-MOMENTUM-BOT  [{ts} UTC]  {cfg['symbol']}-PERP {cfg['timeframe']}          \u2502
 \u251c{chr(9472)*61}\u2524
-\u2502  \U0001f4b0 Price    : {p:<14.4f}   VWAP   : {vw:.4f}
+\u2502  \U0001f4b0 Live      : {live_price:<14.2f}   Candle close : {p:.2f}
+\u2502  \U0001f4c8 VWAP     : {vw:.4f}
 \u2502  \U0001f4c8 Trend    : {trend_str}
 \u251c{chr(9472)*61}\u2524
 \u2502  FIBONACCI CASCADE  (bull: 8 > 21 > 55 > 89 > 233)
@@ -288,7 +321,7 @@ def print_monitor(
 \u251c{chr(9472)*61}\u2524
 \u2502  MOMENTUM CONFIRMATION
 \u2502  {rsi_ok} RSI(14)      : {r:.1f}  (prev: {ind['rsi_prev']:.1f})   [> 45 and rising]
-\u2502  {macd_ok} MACD hist   : {mh:.5f}  (prev: {ind['macd_hist_prev']:.5f})  [> 0 and rising]
+\u2502  {macd_ok} MACD hist   : {macd_str}  (prev: {macd_prev_str})  [> 0 and rising]
 \u2502  {stoch_ok} StochRSI K : {sk:.3f}  (prev: {ind['stoch_k_prev']:.3f})  [left < 0.20]
 \u2502  \U0001f4ca ATR(14)     : {a:.4f}
 \u251c{chr(9472)*61}\u2524
@@ -335,13 +368,28 @@ class HLClient:
             volumes.append(float(candle["v"]))
             times.append(int(candle["t"]))
         return {
-            "open": np.array(opens, dtype=float),
-            "high": np.array(highs, dtype=float),
-            "low": np.array(lows, dtype=float),
-            "close": np.array(closes, dtype=float),
+            "open":   np.array(opens,   dtype=float),
+            "high":   np.array(highs,   dtype=float),
+            "low":    np.array(lows,    dtype=float),
+            "close":  np.array(closes,  dtype=float),
             "volume": np.array(volumes, dtype=float),
-            "time": np.array(times),
+            "time":   np.array(times),
         }
+
+    def get_live_price(self) -> float:
+        """
+        Fetch the accurate last trade price via the Hyperliquid L2 book.
+        Uses the mid of best bid/ask — matches the price shown on
+        app.hyperliquid.xyz more closely than all_mids().
+        """
+        try:
+            book = self.info.post("/info", {"type": "l2Book", "coin": self.symbol})
+            best_bid = float(book["levels"][0][0]["px"])
+            best_ask = float(book["levels"][1][0]["px"])
+            return round((best_bid + best_ask) / 2, 2)
+        except Exception:
+            # Fallback to all_mids if l2Book fails
+            return float(self.info.all_mids()[self.symbol])
 
     def get_balance(self) -> float:
         state = self.info.user_state(CFG["account_address"])
@@ -354,8 +402,8 @@ class HLClient:
                 size = float(pos["position"]["szi"])
                 if size != 0:
                     return {
-                        "side": "long" if size > 0 else "short",
-                        "size": abs(size),
+                        "side":  "long" if size > 0 else "short",
+                        "size":  abs(size),
                         "entry": float(pos["position"]["entryPx"]),
                     }
         return None
@@ -368,7 +416,7 @@ class HLClient:
             log.warning(f"Failed to set leverage: {exc}")
 
     def _get_mid_price(self) -> float:
-        return float(self.info.all_mids()[self.symbol])
+        return self.get_live_price()
 
     def place_market_order(self, is_buy: bool, size: float):
         price = round(self._get_mid_price() * (1.0015 if is_buy else 0.9985), 2)
@@ -425,13 +473,15 @@ class SignalEngine:
 
     def analyse(self, data: Dict[str, np.ndarray]) -> Dict[str, Any]:
         closes = data["close"]
+        # Minimum candles: EMA233 warmup + MACD warmup (26+9) + buffer
         min_candles = self.cfg["ema_233"] + 50
         if len(closes) < min_candles:
             return {"signal": 0, "reason": f"insufficient data ({len(closes)}/{min_candles} candles)"}
 
         ind = compute_indicators(data, self.cfg)
 
-        required_keys = ["rsi", "macd_hist", "stoch_k", "atr", "vwap"]
+        # Allow MACD to still be loading without blocking other signals
+        required_keys = ["rsi", "stoch_k", "atr", "vwap"]
         if any(math.isnan(ind[k]) for k in required_keys):
             return {"signal": 0, "reason": "incomplete indicators", "ind": ind}
 
@@ -439,11 +489,14 @@ class SignalEngine:
         atr_mult = self.cfg["atr_multiplier"]
         rr = self.cfg["reward_risk"]
 
+        macd_valid = not math.isnan(ind["macd_hist"]) and not math.isnan(ind["macd_hist_prev"])
+
         # --- Long ---
         long_conditions = (
             bull_ok
             and ind["rsi"] > 45
             and ind["rsi"] > ind["rsi_prev"]
+            and macd_valid
             and ind["macd_hist"] > 0
             and ind["macd_hist"] > ind["macd_hist_prev"]
             and ind["stoch_k_prev"] < 0.2
@@ -466,6 +519,7 @@ class SignalEngine:
                 bear_ok
                 and ind["rsi"] < 55
                 and ind["rsi"] < ind["rsi_prev"]
+                and macd_valid
                 and ind["macd_hist"] < 0
                 and ind["macd_hist"] < ind["macd_hist_prev"]
                 and ind["stoch_k_prev"] > 0.8
@@ -526,13 +580,13 @@ class MomentumBot:
         log.info(f"{'─' * 50} {ts}")
 
         data = self.client.get_candles(self.cfg["timeframe"], self.cfg["lookback"])
-        price = float(data["close"][-1])
-        log.info(f"Price : {price}")
+        live_price = self.client.get_live_price()
+        log.info(f"Live price : {live_price} | Candle close : {data['close'][-1]}")
 
         position = self.client.get_open_position()
         if position:
             log.info(f"Open position: {position['side'].upper()} | size={position['size']} | entry={position['entry']}")
-            self._manage_position(position, price)
+            self._manage_position(position, live_price)
             self._monitor_loop(data)
             return
 
@@ -542,7 +596,7 @@ class MomentumBot:
         if signal["signal"] == 1:
             balance = self.client.get_balance()
             size = self.risk_manager.calculate_position_size(
-                balance, price, signal["sl"], self.coin_decimals
+                balance, live_price, signal["sl"], self.coin_decimals
             )
             log.info(f"Balance: {balance:.2f} | Size: {size} | SL: {signal['sl']} | TP: {signal['tp']}")
             if size > 0:
@@ -565,47 +619,44 @@ class MomentumBot:
             remaining = candle_end - time.time()
             if remaining <= 0:
                 break
-            try:
-                live_price = float(self.client.info.all_mids()[self.cfg["symbol"]])
-                data_snapshot["close"][-1] = live_price
-            except Exception:
-                pass
+
+            # Fetch live price from L2 book — accurate to Hyperliquid UI
+            live_price = self.client.get_live_price()
 
             if has_indicators:
                 try:
                     indicators = compute_indicators(data_snapshot, self.cfg)
                     position = self.client.get_open_position()
-                    print_monitor(indicators, position, self.cfg, remaining)
+                    print_monitor(indicators, live_price, position, self.cfg, remaining)
                 except Exception as exc:
                     log.debug(f"Monitor render error: {exc}")
             else:
-                price = float(data_snapshot["close"][-1])
                 print(
-                    f"\r  \U0001f4b0 {self.cfg['symbol']} = {price}  "
+                    f"\r  \U0001f4b0 {self.cfg['symbol']} live={live_price}  "
                     f"| Loading indicators... next candle in {remaining:.0f}s",
                     end="", flush=True,
                 )
 
             time.sleep(MONITOR_INTERVAL_SECONDS)
 
-    def _manage_position(self, position: Dict[str, Any], price: float) -> None:
+    def _manage_position(self, position: Dict[str, Any], live_price: float) -> None:
         if self.active_sl is None or self.active_tp is None:
             log.warning("SL/TP not set — cannot manage position.")
             return
         is_long = position["side"] == "long"
-        hit_tp = (is_long and price >= self.active_tp) or (not is_long and price <= self.active_tp)
-        hit_sl = (is_long and price <= self.active_sl) or (not is_long and price >= self.active_sl)
+        hit_tp = (is_long and live_price >= self.active_tp) or (not is_long and live_price <= self.active_tp)
+        hit_sl = (is_long and live_price <= self.active_sl) or (not is_long and live_price >= self.active_sl)
         if hit_tp:
-            log.info(f"TAKE PROFIT hit @ {price} (TP={self.active_tp})")
+            log.info(f"TAKE PROFIT hit @ {live_price} (TP={self.active_tp})")
             self.client.close_position(is_long, position["size"])
             self._reset_trade()
         elif hit_sl:
-            log.info(f"STOP LOSS hit @ {price} (SL={self.active_sl})")
+            log.info(f"STOP LOSS hit @ {live_price} (SL={self.active_sl})")
             self.client.close_position(is_long, position["size"])
             self._reset_trade()
         else:
-            dist_tp = abs(price - self.active_tp)
-            dist_sl = abs(price - self.active_sl)
+            dist_tp = abs(live_price - self.active_tp)
+            dist_sl = abs(live_price - self.active_sl)
             log.info(f"Position OK | dist_TP={dist_tp:.2f} | dist_SL={dist_sl:.2f}")
 
     def _reset_trade(self) -> None:
