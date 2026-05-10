@@ -13,7 +13,7 @@ Fibonacci EMA stack: 8 / 21 / 55 / 89 / 233
 Edge:
   * Full Fibonacci cascade + VWAP
   * Pullback confirmation: RSI(14), MACD(12,26,9), StochRSI(14,3,3)
-  * Risk engine: ATR(14) stop-loss, account-risk position sizing
+  * Risk engine: ATR(14) stop-loss, account-risk position sizing, max_position_usdc cap
   * Real-time price via Hyperliquid WebSocket (allMids feed)
 """
 
@@ -47,7 +47,7 @@ CONFIG_FILE = BASE_DIR / "config.json"
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
-MONITOR_INTERVAL_SECONDS = 3   # Reduced: WS price is instant, display refreshes faster
+MONITOR_INTERVAL_SECONDS = 3
 
 TIMEFRAME_SECONDS: Dict[str, int] = {
     "1m": 60, "3m": 180, "5m": 300, "15m": 900,
@@ -83,12 +83,6 @@ class LivePriceFeed:
     """
     Subscribes to Hyperliquid's allMids WebSocket feed and caches
     the latest mid-price per symbol. Updates arrive every ~1 second.
-
-    Usage:
-        feed = LivePriceFeed(symbol="BTC", testnet=False)
-        feed.start()
-        price = feed.get()   # always the freshest price
-        feed.stop()
     """
 
     def __init__(self, symbol: str, testnet: bool = False):
@@ -105,11 +99,9 @@ class LivePriceFeed:
         )
 
     def start(self) -> None:
-        """Start the background WebSocket thread."""
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, daemon=True, name="LivePriceFeed")
         self._thread.start()
-        # Wait up to 5s for first price
         deadline = time.time() + 5
         while self._price is None and time.time() < deadline:
             time.sleep(0.1)
@@ -119,11 +111,9 @@ class LivePriceFeed:
             log.info(f"LivePriceFeed ready | {self.symbol} = {self._price}")
 
     def stop(self) -> None:
-        """Signal the WebSocket thread to stop."""
         self._stop_event.set()
 
     def get(self) -> Optional[float]:
-        """Return the latest cached price (thread-safe)."""
         with self._lock:
             return self._price
 
@@ -132,13 +122,8 @@ class LivePriceFeed:
             self._price = price
 
     def _run(self) -> None:
-        """
-        WebSocket loop with automatic reconnect.
-        Uses websocket-client (pip install websocket-client).
-        Falls back gracefully if the library is not installed.
-        """
         try:
-            import websocket  # websocket-client
+            import websocket
         except ImportError:
             log.warning("websocket-client not installed. Run: pip install websocket-client")
             log.warning("LivePriceFeed disabled — falling back to REST polling.")
@@ -151,19 +136,16 @@ class LivePriceFeed:
                 ws = websocket.create_connection(self._ws_url, timeout=10)
                 ws.send(subscribe_msg)
                 log.debug(f"LivePriceFeed WS connected: {self._ws_url}")
-
                 while not self._stop_event.is_set():
                     try:
                         raw = ws.recv()
                         msg = json.loads(raw)
-                        # allMids message: {"channel":"allMids","data":{"mids":{"BTC":"103200.5",...}}}
                         if msg.get("channel") == "allMids":
                             mids = msg.get("data", {}).get("mids", {})
                             if self.symbol in mids:
                                 self._set(float(mids[self.symbol]))
                     except Exception:
-                        break  # reconnect
-
+                        break
                 ws.close()
             except Exception as exc:
                 log.debug(f"LivePriceFeed WS error: {exc} — reconnecting in 3s")
@@ -175,11 +157,6 @@ class LivePriceFeed:
 # ---------------------------------------------------------------------------
 
 def calc_ema(series: np.ndarray, period: int) -> np.ndarray:
-    """
-    EMA seeded on the first valid (non-NaN) window of `period` values.
-    Critical for MACD: the MACD line has leading NaNs (first slow-1 values),
-    so the signal EMA seeds correctly by skipping them.
-    """
     out = np.full(len(series), np.nan, dtype=float)
     valid = np.where(~np.isnan(series))[0]
     if len(valid) < period:
@@ -339,6 +316,7 @@ def print_monitor(
     position: Optional[Dict],
     cfg: Dict[str, Any],
     next_candle_in: float,
+    size_info: Optional[str] = None,
 ) -> None:
     p   = ind["price"]
     vw  = ind["vwap"]
@@ -384,6 +362,14 @@ def print_monitor(
             f"| size={position['size']} | PnL dist={pnl:+.2f}"
         )
 
+    max_pos = cfg.get("max_position_usdc")
+    risk_line = (
+        f"risk={cfg['risk_pct']}% | max_pos={max_pos} USDC | lev={cfg['leverage']}x"
+        if max_pos else
+        f"risk={cfg['risk_pct']}% | lev={cfg['leverage']}x"
+    )
+    size_line = f"   {size_info}" if size_info else ""
+
     ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
 
     print(f"""
@@ -393,6 +379,7 @@ def print_monitor(
 \u2502  \U0001f4b0 Live (WS) : {live_price:<14.2f}   Candle close : {p:.2f}
 \u2502  \U0001f4c8 VWAP     : {vw:.4f}
 \u2502  \U0001f4c8 Trend    : {trend_str}
+\u2502  \U0001f6e1\ufe0f  Risk     : {risk_line}{size_line}
 \u251c{chr(9472)*61}\u2524
 \u2502  FIBONACCI CASCADE  (bull: 8 > 21 > 55 > 89 > 233)
 \u2502  {l1} Price  > VWAP   : {p:.2f} {'>' if p > vw else '<'} {vw:.2f}
@@ -459,7 +446,6 @@ class HLClient:
         }
 
     def get_rest_price(self) -> float:
-        """REST fallback: L2 book mid-price."""
         try:
             book     = self.info.post("/info", {"type": "l2Book", "coin": self.symbol})
             best_bid = float(book["levels"][0][0]["px"])
@@ -524,16 +510,63 @@ class HLClient:
 # ---------------------------------------------------------------------------
 
 class RiskManager:
-    def __init__(self, cfg: Dict[str, Any]):
-        self.risk_fraction = cfg["risk_pct"] / 100
+    """
+    Position sizing with two independent controls:
 
-    def calculate_position_size(self, balance: float, entry: float, stop_loss: float, decimals: int = 3) -> float:
+    1. risk_pct  — % of account balance risked if SL is hit (e.g. 1.0 = 1%)
+       Formula: size = (balance * risk_pct/100) / (sl_distance_pct * entry_price)
+
+    2. max_position_usdc  — hard cap on notional value of the position (optional)
+       If omitted or set to 0/null, no cap is applied.
+
+    The final size is the MINIMUM of the two: risk-based size vs. cap-based size.
+    This means max_position_usdc never overrides proper risk management —
+    it only prevents unexpectedly large positions when ATR is very small.
+
+    Example (BTC @ 80,000, balance=2000 USDC, risk_pct=1%, ATR=200, atr_mult=1.5):
+      sl_distance = 200 * 1.5 = 300 USDC (0.375% of price)
+      risk_size   = (2000 * 0.01) / (0.00375 * 80000) = 0.0667 BTC (~5333 USDC notional)
+      max_size    = 500 / 80000 = 0.00625 BTC  (if max_position_usdc=500)
+      final_size  = min(0.0667, 0.00625) = 0.00625 BTC (~500 USDC notional) ✔️
+    """
+
+    def __init__(self, cfg: Dict[str, Any]):
+        self.risk_fraction   = cfg["risk_pct"] / 100
+        self.max_pos_usdc    = float(cfg.get("max_position_usdc") or 0)
+
+    def calculate_position_size(
+        self,
+        balance: float,
+        entry: float,
+        stop_loss: float,
+        decimals: int = 3,
+    ) -> tuple:
+        """
+        Returns (size, reason_str) where reason_str explains which limit was applied.
+        """
         sl_distance = abs(entry - stop_loss) / entry
         if sl_distance == 0:
-            return 0.0
-        factor   = 10 ** decimals
-        raw_size = (balance * self.risk_fraction) / sl_distance / entry
-        return max(math.floor(raw_size * factor) / factor, 10 ** (-decimals))
+            return 0.0, "sl_distance=0"
+
+        factor = 10 ** decimals
+
+        # 1. Risk-based size
+        risk_size_raw = (balance * self.risk_fraction) / sl_distance / entry
+        risk_size     = max(math.floor(risk_size_raw * factor) / factor, 10 ** (-decimals))
+
+        # 2. Cap-based size (optional)
+        if self.max_pos_usdc > 0:
+            cap_size_raw = self.max_pos_usdc / entry
+            cap_size     = max(math.floor(cap_size_raw * factor) / factor, 10 ** (-decimals))
+
+            if cap_size < risk_size:
+                notional = round(cap_size * entry, 2)
+                reason   = f"capped by max_position_usdc={self.max_pos_usdc} → {cap_size} BTC (~{notional} USDC)"
+                return cap_size, reason
+
+        notional = round(risk_size * entry, 2)
+        reason   = f"risk-based ({self.risk_fraction*100}% of {balance:.0f}) → {risk_size} BTC (~{notional} USDC)"
+        return risk_size, reason
 
 
 # ---------------------------------------------------------------------------
@@ -611,34 +644,35 @@ class SignalEngine:
 
 class MomentumBot:
     def __init__(self):
-        self.cfg          = CFG
-        self.client       = HLClient(self.cfg)
+        self.cfg           = CFG
+        self.client        = HLClient(self.cfg)
         self.signal_engine = SignalEngine(self.cfg)
-        self.risk_manager = RiskManager(self.cfg)
+        self.risk_manager  = RiskManager(self.cfg)
         self.client.set_leverage(self.cfg["leverage"])
         self.coin_decimals = self.client.get_coin_decimals()
         self.active_sl: Optional[float] = None
         self.active_tp: Optional[float] = None
+        self.last_size_info: Optional[str] = None
 
-        # Start WebSocket price feed
         self.price_feed = LivePriceFeed(
             symbol=self.cfg["symbol"],
             testnet=self.cfg.get("testnet", True),
         )
         self.price_feed.start()
 
+        max_pos = self.cfg.get("max_position_usdc", "unlimited")
         log.info("=" * 70)
         log.info("  HL-MOMENTUM-BOT STARTED")
-        log.info(f"  Symbol     : {self.cfg['symbol']}-PERP")
-        log.info(f"  Timeframe  : {self.cfg['timeframe']}")
-        log.info(f"  Leverage   : {self.cfg['leverage']}x")
-        log.info(f"  Risk/trade : {self.cfg['risk_pct']}%")
-        log.info("  EMA Stack  : 8 / 21 / 55 / 89 / 233")
-        log.info("  Price feed : WebSocket allMids (REST fallback)")
+        log.info(f"  Symbol          : {self.cfg['symbol']}-PERP")
+        log.info(f"  Timeframe       : {self.cfg['timeframe']}")
+        log.info(f"  Leverage        : {self.cfg['leverage']}x")
+        log.info(f"  Risk/trade      : {self.cfg['risk_pct']}%")
+        log.info(f"  Max position    : {max_pos} USDC")
+        log.info("  EMA Stack       : 8 / 21 / 55 / 89 / 233")
+        log.info("  Price feed      : WebSocket allMids (REST fallback)")
         log.info("=" * 70)
 
     def _get_live_price(self) -> float:
-        """WS price if available, REST fallback otherwise."""
         ws_price = self.price_feed.get()
         if ws_price is not None:
             return ws_price
@@ -681,10 +715,12 @@ class MomentumBot:
 
         if signal["signal"] == 1:
             balance = self.client.get_balance()
-            size    = self.risk_manager.calculate_position_size(
+            size, size_info = self.risk_manager.calculate_position_size(
                 balance, live_price, signal["sl"], self.coin_decimals
             )
-            log.info(f"Balance: {balance:.2f} | Size: {size} | SL: {signal['sl']} | TP: {signal['tp']}")
+            self.last_size_info = size_info
+            log.info(f"Balance: {balance:.2f} USDC | Size: {size_info}")
+            log.info(f"SL: {signal['sl']} | TP: {signal['tp']}")
             if size > 0:
                 self.client.place_market_order(signal["side"] == "long", size, live_price)
                 self.active_sl = signal["sl"]
@@ -712,7 +748,10 @@ class MomentumBot:
                 try:
                     indicators = compute_indicators(data_snapshot, self.cfg)
                     position   = self.client.get_open_position()
-                    print_monitor(indicators, live_price, position, self.cfg, remaining)
+                    print_monitor(
+                        indicators, live_price, position,
+                        self.cfg, remaining, self.last_size_info,
+                    )
                 except Exception as exc:
                     log.debug(f"Monitor render error: {exc}")
             else:
@@ -745,8 +784,9 @@ class MomentumBot:
             log.info(f"Position OK | dist_TP={dist_tp:.2f} | dist_SL={dist_sl:.2f}")
 
     def _reset_trade(self) -> None:
-        self.active_sl = None
-        self.active_tp = None
+        self.active_sl      = None
+        self.active_tp      = None
+        self.last_size_info = None
 
 
 if __name__ == "__main__":
