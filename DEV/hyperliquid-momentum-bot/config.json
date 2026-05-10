@@ -8,9 +8,10 @@
   "leverage": 5,
   "risk_pct": 1.0,
 
-  "ema_8": 8,
+  "ema_8":   8,
   "ema_fast": 21,
   "ema_slow": 55,
+  "ema_89":   89,
   "ema_trend": 233,
   "rsi_length": 14,
 
@@ -18,7 +19,7 @@
   "rr": 2.0,
 
   "enable_shorts": false,
-  "lookback": 500,
+  "lookback": 600,
 
   "log_level": "INFO"
 }
