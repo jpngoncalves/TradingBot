@@ -17,7 +17,7 @@
   "rr": 2.0,
 
   "enable_shorts": false,
-  "lookback": 400,
+  "lookback": 500,
 
   "log_level": "INFO"
 }

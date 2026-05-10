@@ -8,9 +8,6 @@ HL-MOMENTUM-BOT — Hyperliquid Futures Trend + Momentum Bot
     * Tendência institucional: EMA 21/55/233 + VWAP
     * Pullbacks com confluência: RSI(14), MACD(12,26,9), StochRSI(14,3,3)
     * Gestão de risco: ATR(14) para SL/TP e tamanho da posição por % do account
-
-Este ficheiro é uma cópia renomeada e simplificada do antigo bot "liq-map",
-sem dependências de APIs externas de liquidações.
 """
 
 import json
@@ -18,11 +15,16 @@ import logging
 import math
 import sys
 import time
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
 
 import numpy as np
+
+# Suprimir RuntimeWarnings do numpy (divisões por zero tratadas internamente)
+warnings.filterwarnings("ignore", category=RuntimeWarning, module="numpy")
+np.seterr(divide="ignore", invalid="ignore")
 
 import eth_account
 from hyperliquid.exchange import Exchange
@@ -62,7 +64,7 @@ log = logging.getLogger("HL-MOMENTUM-BOT")
 
 def ema(series: np.ndarray, period: int) -> np.ndarray:
     k = 2 / (period + 1)
-    out = np.full_like(series, np.nan)
+    out = np.full_like(series, np.nan, dtype=float)
     out[period - 1] = np.mean(series[:period])
     for i in range(period, len(series)):
         out[i] = series[i] * k + out[i - 1] * (1 - k)
@@ -73,17 +75,18 @@ def rsi(series: np.ndarray, period: int = 14) -> np.ndarray:
     delta = np.diff(series)
     up = np.where(delta > 0, delta, 0.0)
     down = np.where(delta < 0, -delta, 0.0)
-    roll_up = np.empty_like(series)
-    roll_down = np.empty_like(series)
+    roll_up = np.empty(len(series), dtype=float)
+    roll_down = np.empty(len(series), dtype=float)
     roll_up[:period] = 0
     roll_down[:period] = 0
     roll_up[period] = np.mean(up[:period])
     roll_down[period] = np.mean(down[:period])
     for i in range(period + 1, len(series)):
-        roll_up[i] = (roll_up[i-1] * (period - 1) + up[i-1]) / period
-        roll_down[i] = (roll_down[i-1] * (period - 1) + down[i-1]) / period
-    rs = np.where(roll_down == 0, np.inf, roll_up / roll_down)
-    rsi_val = 100 - (100 / (1 + rs))
+        roll_up[i] = (roll_up[i - 1] * (period - 1) + up[i - 1]) / period
+        roll_down[i] = (roll_down[i - 1] * (period - 1) + down[i - 1]) / period
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rs = np.where(roll_down == 0, np.inf, roll_up / roll_down)
+        rsi_val = 100 - (100 / (1 + rs))
     rsi_val[:period] = np.nan
     return rsi_val
 
@@ -100,16 +103,13 @@ def macd(series: np.ndarray, fast: int = 12, slow: int = 26, signal: int = 9):
 def stoch_rsi(series: np.ndarray, rsi_length: int = 14, stoch_length: int = 14,
               k: int = 3, d: int = 3):
     r = rsi(series, rsi_length)
-    out_k = np.full_like(series, np.nan, dtype=float)
-    out_d = np.full_like(series, np.nan, dtype=float)
+    out_k = np.full(len(series), np.nan, dtype=float)
+    out_d = np.full(len(series), np.nan, dtype=float)
     for i in range(stoch_length, len(series)):
         window = r[i - stoch_length + 1:i + 1]
         r_min = np.nanmin(window)
         r_max = np.nanmax(window)
-        if r_max - r_min == 0:
-            k_val = 0.5
-        else:
-            k_val = (r[i] - r_min) / (r_max - r_min)
+        k_val = 0.5 if (r_max - r_min) == 0 else (r[i] - r_min) / (r_max - r_min)
         out_k[i] = k_val
         if i >= stoch_length + k - 1:
             out_d[i] = np.nanmean(out_k[i - k + 1:i + 1])
@@ -119,14 +119,13 @@ def stoch_rsi(series: np.ndarray, rsi_length: int = 14, stoch_length: int = 14,
 def atr(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 14) -> np.ndarray:
     prev_close = np.roll(closes, 1)
     prev_close[0] = closes[0]
-    tr1 = highs - lows
-    tr2 = np.abs(highs - prev_close)
-    tr3 = np.abs(lows - prev_close)
-    tr = np.maximum(tr1, np.maximum(tr2, tr3))
-    out = np.full_like(tr, np.nan, dtype=float)
+    tr = np.maximum(highs - lows, np.maximum(
+        np.abs(highs - prev_close), np.abs(lows - prev_close)
+    ))
+    out = np.full(len(tr), np.nan, dtype=float)
     out[period - 1] = np.mean(tr[:period])
     for i in range(period, len(tr)):
-        out[i] = (out[i-1] * (period - 1) + tr[i]) / period
+        out[i] = (out[i - 1] * (period - 1) + tr[i]) / period
     return out
 
 
@@ -134,7 +133,8 @@ def vwap(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, volumes: np.nd
     typical_price = (highs + lows + closes) / 3
     cum_vol = np.cumsum(volumes)
     cum_tp_vol = np.cumsum(typical_price * volumes)
-    vwap_arr = np.where(cum_vol == 0, np.nan, cum_tp_vol / cum_vol)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        vwap_arr = np.where(cum_vol == 0, np.nan, cum_tp_vol / cum_vol)
     return vwap_arr
 
 
@@ -153,7 +153,7 @@ class HLClient:
         self.exchange = Exchange(wallet, url, account_address=cfg["account_address"])
         log.info(f"HLClient iniciado | {'TESTNET' if self.testnet else 'MAINNET'} | {self.symbol}")
 
-    def get_candles(self, interval: str, limit: int = 300) -> Dict[str, np.ndarray]:
+    def get_candles(self, interval: str, limit: int = 500) -> Dict[str, np.ndarray]:
         now_ms = int(time.time() * 1000)
         tf_secs = {"1m": 60, "3m": 180, "5m": 300, "15m": 900,
                    "1h": 3600, "4h": 14400, "1d": 86400}
@@ -175,11 +175,11 @@ class HLClient:
             v.append(float(candle["v"]))
             t.append(int(candle["t"]))
         return {
-            "open": np.array(o),
-            "high": np.array(h),
-            "low": np.array(l),
-            "close": np.array(c),
-            "volume": np.array(v),
+            "open": np.array(o, dtype=float),
+            "high": np.array(h, dtype=float),
+            "low": np.array(l, dtype=float),
+            "close": np.array(c, dtype=float),
+            "volume": np.array(v, dtype=float),
             "time": np.array(t),
         }
 
@@ -217,10 +217,7 @@ class HLClient:
         px = price * (1 + slippage) if is_buy else price * (1 - slippage)
         px = round(px, 2)
         result = self.exchange.order(
-            self.symbol,
-            is_buy,
-            size,
-            px,
+            self.symbol, is_buy, size, px,
             {"limit": {"tif": "Ioc"}},
             reduce_only=False,
         )
@@ -233,10 +230,7 @@ class HLClient:
         px = price * (1 - slippage) if is_long else price * (1 + slippage)
         px = round(px, 2)
         result = self.exchange.order(
-            self.symbol,
-            not is_long,
-            size,
-            px,
+            self.symbol, not is_long, size, px,
             {"limit": {"tif": "Ioc"}},
             reduce_only=True,
         )
@@ -273,86 +267,64 @@ class SignalEngine:
 
     def analyse(self, d: Dict[str, np.ndarray]) -> Dict[str, Any]:
         o, h, l, c, v = d["open"], d["high"], d["low"], d["close"], d["volume"]
-        n = len(c)
         min_len = max(self.cfg["ema_fast"], self.cfg["ema_slow"], self.cfg["ema_trend"]) + 50
-        if n < min_len:
-            return {"signal": 0, "reason": "dados insuficientes"}
+        if len(c) < min_len:
+            return {"signal": 0, "reason": f"dados insuficientes ({len(c)}/{min_len} candles)"}
 
         ema_fast = ema(c, self.cfg["ema_fast"])
         ema_slow = ema(c, self.cfg["ema_slow"])
         ema_trend = ema(c, self.cfg["ema_trend"])
         rsi_arr = rsi(c, self.cfg.get("rsi_length", 14))
-        macd_line, macd_sig, macd_hist = macd(c, 12, 26, 9)
-        k_srsi, d_srsi = stoch_rsi(c, 14, 14, 3, 3)
+        _, _, macd_hist = macd(c, 12, 26, 9)
+        k_srsi, _ = stoch_rsi(c, 14, 14, 3, 3)
         atr_arr = atr(h, l, c, 14)
         vwap_arr = vwap(h, l, c, v)
 
-        price = float(c[-1])
-        rsi_val = rsi_arr[-1]
-        rsi_prev = rsi_arr[-2]
-        macd_h = macd_hist[-1]
-        macd_prev = macd_hist[-2]
-        k_val = k_srsi[-1]
-        k_prev = k_srsi[-2]
-        atr_val = atr_arr[-1]
-        vwap_val = vwap_arr[-1]
+        price    = float(c[-1])
+        rsi_val  = float(rsi_arr[-1])
+        rsi_prev = float(rsi_arr[-2])
+        macd_h   = float(macd_hist[-1])
+        macd_prev= float(macd_hist[-2])
+        k_val    = float(k_srsi[-1])
+        k_prev   = float(k_srsi[-2])
+        atr_val  = float(atr_arr[-1])
+        vwap_val = float(vwap_arr[-1])
 
-        if np.isnan([rsi_val, macd_h, k_val, atr_val, vwap_val]).any():
+        if any(math.isnan(x) for x in [rsi_val, macd_h, k_val, atr_val, vwap_val]):
             return {"signal": 0, "reason": "indicadores incompletos"}
 
         bull_trend = (price > vwap_val) and (ema_fast[-1] > ema_slow[-1] > ema_trend[-1])
         bear_trend = (price < vwap_val) and (ema_fast[-1] < ema_slow[-1] < ema_trend[-1])
 
-        rsi_pullback_long = (rsi_val > 45) and (rsi_val > rsi_prev)
-        rsi_pullback_short = (rsi_val < 55) and (rsi_val < rsi_prev)
-
-        macd_long = (macd_h > 0) and (macd_h > macd_prev)
-        macd_short = (macd_h < 0) and (macd_h < macd_prev)
-
-        stoch_long = (k_prev < 0.2) and (k_val > k_prev)
-        stoch_short = (k_prev > 0.8) and (k_val < k_prev)
-
         atr_mult = self.cfg.get("atr_mult", 1.5)
-        rr = self.cfg.get("rr", 2.0)
+        rr       = self.cfg.get("rr", 2.0)
 
-        long_cond = bull_trend and rsi_pullback_long and macd_long and stoch_long
+        long_cond = (bull_trend
+                     and rsi_val > 45 and rsi_val > rsi_prev
+                     and macd_h > 0 and macd_h > macd_prev
+                     and k_prev < 0.2 and k_val > k_prev)
         if long_cond:
             risk = atr_mult * atr_val
-            sl = round(price - risk, 2)
-            tp = round(price + risk * rr, 2)
-            reasons = [
-                "trend bullish (EMA/VWAP)",
-                "RSI pullback up",
-                "MACD>0 improving",
-                "StochRSI OS->UP",
-            ]
             return {
-                "signal": 1,
-                "side": "long",
-                "sl": sl,
-                "tp": tp,
-                "reason": " | ".join(reasons),
+                "signal": 1, "side": "long",
+                "sl": round(price - risk, 2),
+                "tp": round(price + risk * rr, 2),
+                "reason": "trend bullish (EMA/VWAP) | RSI pullback up | MACD>0 improving | StochRSI OS->UP",
             }
 
-        short_enabled = self.cfg.get("enable_shorts", False)
-        short_cond = bear_trend and rsi_pullback_short and macd_short and stoch_short
-        if short_enabled and short_cond:
-            risk = atr_mult * atr_val
-            sl = round(price + risk, 2)
-            tp = round(price - risk * rr, 2)
-            reasons = [
-                "trend bearish (EMA/VWAP)",
-                "RSI pullback down",
-                "MACD<0 worsening",
-                "StochRSI OB->DOWN",
-            ]
-            return {
-                "signal": 1,
-                "side": "short",
-                "sl": sl,
-                "tp": tp,
-                "reason": " | ".join(reasons),
-            }
+        if self.cfg.get("enable_shorts", False):
+            short_cond = (bear_trend
+                          and rsi_val < 55 and rsi_val < rsi_prev
+                          and macd_h < 0 and macd_h < macd_prev
+                          and k_prev > 0.8 and k_val < k_prev)
+            if short_cond:
+                risk = atr_mult * atr_val
+                return {
+                    "signal": 1, "side": "short",
+                    "sl": round(price + risk, 2),
+                    "tp": round(price - risk * rr, 2),
+                    "reason": "trend bearish (EMA/VWAP) | RSI pullback down | MACD<0 worsening | StochRSI OB->DOWN",
+                }
 
         return {"signal": 0, "reason": "sem confluência"}
 
@@ -392,7 +364,7 @@ class MomentumBot:
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         log.info(f"── Tick {ts} ──────────────────────────")
 
-        data = self.hl.get_candles(self.cfg["timeframe"], limit=self.cfg.get("lookback", 400))
+        data = self.hl.get_candles(self.cfg["timeframe"], limit=self.cfg.get("lookback", 500))
         price = float(data["close"][-1])
         log.info(f"Preço actual  : {price}")
 
@@ -403,7 +375,7 @@ class MomentumBot:
             return
 
         sig = self.engine.analyse(data)
-        log.info(f"Sinal         : {sig['signal']} | {sig.get('side','-')} | {sig.get('reason','')}")
+        log.info(f"Sinal         : {sig['signal']} | {sig.get('side', '-')} | {sig.get('reason', '')}")
 
         if sig["signal"] == 0:
             return
@@ -441,9 +413,7 @@ class MomentumBot:
             self.hl.close_position(is_long, pos["size"])
             self._reset_state()
         else:
-            dist_tp = abs(price - self.active_tp)
-            dist_sl = abs(price - self.active_sl)
-            log.info(f"Posição activa → dist_TP={dist_tp:.2f} | dist_SL={dist_sl:.2f}")
+            log.info(f"Posição activa → dist_TP={abs(price - self.active_tp):.2f} | dist_SL={abs(price - self.active_sl):.2f}")
 
     def _reset_state(self):
         self.active_sl = None
