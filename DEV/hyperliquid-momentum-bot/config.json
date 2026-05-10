@@ -9,14 +9,14 @@
   "risk_pct": 1.0,
 
   "ema_8": 8,
-  "ema_fast": 21,
-  "ema_slow": 55,
+  "ema_21": 21,
+  "ema_55": 55,
   "ema_89": 89,
-  "ema_trend": 233,
+  "ema_233": 233,
   "rsi_length": 14,
 
-  "atr_mult": 1.5,
-  "rr": 2.0,
+  "atr_multiplier": 1.5,
+  "reward_risk": 2.0,
 
   "enable_shorts": false,
   "lookback": 600,
