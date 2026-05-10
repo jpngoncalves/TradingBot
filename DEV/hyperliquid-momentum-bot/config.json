@@ -1,6 +1,6 @@
 {
-  "account_address": "0xSEU_ENDERECO_PUBLICO_AQUI",
-  "secret_key": "0xSUA_CHAVE_PRIVADA_API_AQUI",
+  "account_address": "0xYOUR_PUBLIC_ADDRESS_HERE",
+  "secret_key": "0xYOUR_PRIVATE_KEY_HERE",
   "testnet": true,
   "symbol": "BTC",
   "timeframe": "15m",
@@ -8,10 +8,10 @@
   "leverage": 5,
   "risk_pct": 1.0,
 
-  "ema_8":   8,
+  "ema_8": 8,
   "ema_fast": 21,
   "ema_slow": 55,
-  "ema_89":   89,
+  "ema_89": 89,
   "ema_trend": 233,
   "rsi_length": 14,
 

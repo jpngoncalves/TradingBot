@@ -1,57 +1,48 @@
-HL-MOMENTUM-BOT — Hyperliquid Futures Trend + Momentum Bot
+# Hyperliquid Momentum Bot
 
-## Descrição
+A momentum and trend-following futures bot for Hyperliquid perpetuals.
 
-Bot de Futuros Perpétuos na Hyperliquid que segue a tendência em 15m com
-entradas em pullbacks bem definidos.
+## Strategy
 
-- Timeframe: **15m** (config.json)
-- Mercado: perps (por defeito **BTC-PERP**)
-- Indicadores:
-  - EMA(21/55/233) → tendência de curto/médio/longo
-  - VWAP → referência institucional de preço justo
-  - RSI(14) → força do movimento
-  - MACD(12,26,9) (histograma) → momentum
-  - StochRSI(14,3,3) → timing de saída de oversold/overbought
-  - ATR(14) → dimensão de SL/TP
+This bot trades with a full Fibonacci EMA cascade:
+- EMA 8 → short-term momentum
+- EMA 21 → short/medium trend
+- EMA 55 → medium trend
+- EMA 89 → medium/long trend
+- EMA 233 → major trend
 
-## Regras principais
+A long signal requires:
+- Price above VWAP
+- EMA 8 > EMA 21 > EMA 55 > EMA 89 > EMA 233
+- RSI(14) above 45 and rising
+- MACD histogram above 0 and rising
+- StochRSI leaving oversold conditions
 
-### LONG
-1. Tendência bullish:
-   - Preço > VWAP
-   - EMA21 > EMA55 > EMA233
-2. Pullback saudável:
-   - RSI > 45 e RSI actual > RSI anterior
-   - MACD hist > 0 e a melhorar
-   - StochRSI: K_prev < 0.2 e K_actual > K_prev (sair de oversold)
-3. SL/TP:
-   - SL = entry − ATR × atr_mult
-   - TP = entry + ATR × atr_mult × rr
+An optional short mode mirrors these rules in the opposite direction.
 
-### SHORT (opcional)
-- Activado com `enable_shorts = true` em config.json.
-- Condições simétricas em tendência bearish.
+## Risk Management
 
-## Gestão de risco
+- Position sizing based on account risk percentage
+- ATR-based stop-loss
+- Risk/reward take-profit target
+- Leverage configurable in `config.json`
 
-- `risk_pct`: percentagem do account arriscada por trade entre entry e SL.
-- Tamanho da posição calculado automaticamente em função da distância ao SL.
-- `atr_mult` e `rr` controlam a agressividade (ruído vs. alvo de lucro).
+## Files
 
-## Uso
+- `bot.py` — main bot logic
+- `config.json` — bot configuration
+- `strategy.txt` — strategy description
+- `requirements.txt` — dependencies
 
-1. Preenche `config.json` com:
-   - `account_address` e `secret_key` da tua conta/ carteira de trading HL.
-   - `testnet = true` enquanto testas.
-2. Instala dependências:
+## Run
 
 ```bash
-pip install -r DEV/hyperliquid-momentum-bot/requirements.txt
+pip install -r requirements.txt
+python bot.py
 ```
 
-3. Corre o bot:
+## Notes
 
-```bash
-python DEV/hyperliquid-momentum-bot/bot.py
-```
+- Testnet is enabled by default
+- Update your account address and private key in `config.json`
+- Logs are written to `logs/bot.log`

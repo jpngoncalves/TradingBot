@@ -1,0 +1,44 @@
+Hyperliquid Momentum Bot Strategy
+================================
+
+Market:
+- Hyperliquid perpetual futures
+- Default symbol: BTC
+- Default timeframe: 15m
+
+Core structure:
+- EMA 8  → short-term momentum
+- EMA 21 → short/medium trend
+- EMA 55 → medium trend
+- EMA 89 → medium/long trend
+- EMA 233 → major trend
+- VWAP   → session value reference
+
+Long entry conditions:
+1. Price > VWAP
+2. EMA 8 > EMA 21 > EMA 55 > EMA 89 > EMA 233
+3. RSI(14) > 45 and rising vs previous candle
+4. MACD histogram > 0 and rising vs previous candle
+5. StochRSI K leaves oversold zone (< 0.20) and turns upward
+
+Optional short entry conditions:
+1. Price < VWAP
+2. EMA 8 < EMA 21 < EMA 55 < EMA 89 < EMA 233
+3. RSI(14) < 55 and falling
+4. MACD histogram < 0 and falling
+5. StochRSI K leaves overbought zone (> 0.80) and turns downward
+
+Risk model:
+- Position size based on account balance and configured risk percentage
+- Stop-loss = ATR(14) × multiplier
+- Take-profit = stop distance × reward/risk ratio
+
+Monitoring:
+- Terminal dashboard updates every 10 seconds
+- Shows live price, VWAP, EMA cascade, RSI, MACD histogram, StochRSI and ATR
+- Shows open position status and time remaining until next candle
+
+Purpose:
+- Capture pullbacks inside a confirmed trend
+- Avoid counter-trend entries
+- Improve trade quality using multi-layer confirmation
