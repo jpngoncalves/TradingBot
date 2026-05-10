@@ -8,6 +8,7 @@
   "leverage": 5,
   "risk_pct": 1.0,
 
+  "ema_8": 8,
   "ema_fast": 21,
   "ema_slow": 55,
   "ema_trend": 233,

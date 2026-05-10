@@ -4,8 +4,9 @@ HL-MOMENTUM-BOT — Hyperliquid Futures Trend + Momentum Bot
 
 - Futuros perp na Hyperliquid (BTC-PERP por defeito)
 - Timeframe 15m (configurável via config.json)
+- EMAs: 8 / 21 / 55 / 233
 - Edge:
-    * Tendência institucional: EMA 21/55/233 + VWAP
+    * Tendência institucional: EMA 8/21/55/233 + VWAP
     * Pullbacks com confluência: RSI(14), MACD(12,26,9), StochRSI(14,3,3)
     * Gestão de risco: ATR(14) para SL/TP e tamanho da posição por % do account
 """
@@ -77,15 +78,14 @@ def rsi(series: np.ndarray, period: int = 14) -> np.ndarray:
     down = np.where(delta < 0, -delta, 0.0)
     roll_up   = np.empty(len(series), dtype=float)
     roll_down = np.empty(len(series), dtype=float)
-    roll_up[:period]   = 0
-    roll_down[:period] = 0
+    roll_up[:period] = roll_down[:period] = 0
     roll_up[period]   = np.mean(up[:period])
     roll_down[period] = np.mean(down[:period])
     for i in range(period + 1, len(series)):
         roll_up[i]   = (roll_up[i-1]   * (period-1) + up[i-1])   / period
         roll_down[i] = (roll_down[i-1] * (period-1) + down[i-1]) / period
     with np.errstate(divide="ignore", invalid="ignore"):
-        rs = np.where(roll_down == 0, np.inf, roll_up / roll_down)
+        rs  = np.where(roll_down == 0, np.inf, roll_up / roll_down)
         out = 100 - (100 / (1 + rs))
     out[:period] = np.nan
     return out
@@ -93,8 +93,7 @@ def rsi(series: np.ndarray, period: int = 14) -> np.ndarray:
 
 def macd(series: np.ndarray, fast=12, slow=26, signal=9):
     ml = ema(series, fast) - ema(series, slow)
-    sl = ema(ml, signal)
-    return ml, sl, ml - sl
+    return ml, ema(ml, signal), ml - ema(ml, signal)
 
 
 def stoch_rsi(series: np.ndarray, rsi_len=14, stoch_len=14, k=3, d=3):
@@ -112,7 +111,7 @@ def stoch_rsi(series: np.ndarray, rsi_len=14, stoch_len=14, k=3, d=3):
 
 def atr(highs, lows, closes, period=14) -> np.ndarray:
     pc = np.roll(closes, 1); pc[0] = closes[0]
-    tr = np.maximum(highs - lows, np.maximum(np.abs(highs - pc), np.abs(lows - pc)))
+    tr  = np.maximum(highs - lows, np.maximum(np.abs(highs - pc), np.abs(lows - pc)))
     out = np.full(len(tr), np.nan, dtype=float)
     out[period - 1] = np.mean(tr[:period])
     for i in range(period, len(tr)):
@@ -129,21 +128,22 @@ def vwap(highs, lows, closes, volumes) -> np.ndarray:
 
 
 def compute_indicators(d: Dict[str, np.ndarray], cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """Calcula todos os indicadores e devolve dicionário com valores actuais."""
     h, l, c, v = d["high"], d["low"], d["close"], d["volume"]
 
-    ef  = ema(c, cfg["ema_fast"])
-    es  = ema(c, cfg["ema_slow"])
-    et  = ema(c, cfg["ema_trend"])
-    r   = rsi(c, cfg.get("rsi_length", 14))
+    e8   = ema(c, cfg.get("ema_8", 8))
+    ef   = ema(c, cfg["ema_fast"])    # 21
+    es   = ema(c, cfg["ema_slow"])    # 55
+    et   = ema(c, cfg["ema_trend"])   # 233
+    r    = rsi(c, cfg.get("rsi_length", 14))
     _, _, mh = macd(c, 12, 26, 9)
     k_s, _   = stoch_rsi(c, 14, 14, 3, 3)
-    a   = atr(h, l, c, 14)
-    vw  = vwap(h, l, c, v)
+    a    = atr(h, l, c, 14)
+    vw   = vwap(h, l, c, v)
 
     price = float(c[-1])
     return {
         "price":      price,
+        "ema8":       float(e8[-1]),
         "ema_fast":   float(ef[-1]),
         "ema_slow":   float(es[-1]),
         "ema_trend":  float(et[-1]),
@@ -159,54 +159,51 @@ def compute_indicators(d: Dict[str, np.ndarray], cfg: Dict[str, Any]) -> Dict[st
 
 
 def print_monitor(ind: Dict[str, Any], pos: Optional[Dict], cfg: Dict[str, Any], next_candle_in: float):
-    """Imprime painel de monitorização no terminal."""
-    p = ind["price"]
+    p  = ind["price"]
     vw = ind["vwap"]
-    ef, es, et = ind["ema_fast"], ind["ema_slow"], ind["ema_trend"]
+    e8, ef, es, et = ind["ema8"], ind["ema_fast"], ind["ema_slow"], ind["ema_trend"]
     r  = ind["rsi"]
     mh = ind["macd_hist"]
     k  = ind["stoch_k"]
     a  = ind["atr"]
 
-    # Tendência
-    bull = p > vw and ef > es > et
-    bear = p < vw and ef < es < et
+    bull = p > vw and e8 > ef > es > et
+    bear = p < vw and e8 < ef < es < et
     trend_str = "⬆️ BULLISH" if bull else ("⬇️ BEARISH" if bear else "➡️ LATERAL")
 
-    # Condições long
+    trend_ok = "✅" if bull else "❌"
     rsi_ok   = "✅" if r > 45 and r > ind["rsi_prev"]   else "❌"
     macd_ok  = "✅" if mh > 0 and mh > ind["macd_prev"] else "❌"
     stoch_ok = "✅" if ind["stoch_prev"] < 0.2 and k > ind["stoch_prev"] else "❌"
-    trend_ok = "✅" if bull else "❌"
 
-    all_ok = all(x == "✅" for x in [rsi_ok, macd_ok, stoch_ok, trend_ok])
-    signal_str = "⚡ SINAL LONG DETECTADO!" if all_ok else "  Aguardar sinal..."
+    all_ok     = all(x == "✅" for x in [trend_ok, rsi_ok, macd_ok, stoch_ok])
+    signal_str = "⚡ SINAL LONG DETECTADO!" if all_ok else "   Aguardar sinal..."
 
     pos_str = "Nenhuma"
     if pos:
-        pnl_dist = p - pos["entry"] if pos["side"] == "long" else pos["entry"] - p
-        pos_str = f"{pos['side'].upper()} | entry={pos['entry']} | size={pos['size']} | PnL dist={pnl_dist:+.2f}"
+        pnl = p - pos["entry"] if pos["side"] == "long" else pos["entry"] - p
+        pos_str = f"{pos['side'].upper()} | entry={pos['entry']} | size={pos['size']} | PnL dist={pnl:+.2f}"
 
     ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
     print(f"""
 ┌───────────────────────────────────────────────────────────┐
-│  HL-MOMENTUM-BOT  [{ts} UTC]  {cfg['symbol']}-PERP {cfg['timeframe']}  │
+│  HL-MOMENTUM-BOT  [{ts} UTC]  {cfg['symbol']}-PERP {cfg['timeframe']}       │
 ├───────────────────────────────────────────────────────────┤
-│  💰 Preço       : {p:<12.4f}   VWAP  : {vw:.4f}
-│  📈 Tendência    : {trend_str}
-│     EMA{cfg['ema_fast']:>3}    : {ef:<12.4f}   EMA{cfg['ema_slow']:>3}  : {es:.4f}
-│     EMA{cfg['ema_trend']:>3}   : {et:.4f}
+│  💰 Preço        : {p:<14.4f}  VWAP   : {vw:.4f}
+│  📈 Tendência     : {trend_str}
+│     EMA  8      : {e8:<14.4f}  EMA 21 : {ef:.4f}
+│     EMA 55      : {es:<14.4f}  EMA233 : {et:.4f}
 ├───────────────────────────────────────────────────────────┤
 │  CONDIÇÕES LONG
-│  {trend_ok} Tendência bullish    (preço > VWAP + EMAs alinhadas)
-│  {rsi_ok} RSI          : {r:.1f}  (prev: {ind['rsi_prev']:.1f})   [precisa >45 e a subir]
-│  {macd_ok} MACD hist    : {mh:.4f}  (prev: {ind['macd_prev']:.4f})  [precisa >0 e a subir]
-│  {stoch_ok} StochRSI K  : {k:.3f}  (prev: {ind['stoch_prev']:.3f})   [precisa sair <0.2]
-│  📊 ATR          : {a:.4f}
+│  {trend_ok} Tendência bullish  (preço>VWAP + EMA8>21>55>233)
+│  {rsi_ok} RSI(14)       : {r:.1f}   (prev: {ind['rsi_prev']:.1f})    [precisa >45 e a subir]
+│  {macd_ok} MACD hist    : {mh:.5f}  (prev: {ind['macd_prev']:.5f})  [precisa >0 e a subir]
+│  {stoch_ok} StochRSI K : {k:.3f}   (prev: {ind['stoch_prev']:.3f})   [precisa sair de <0.2]
+│  📊 ATR(14)        : {a:.4f}
 ├───────────────────────────────────────────────────────────┤
-│  📦 Posição      : {pos_str}
+│  📦 Posição       : {pos_str}
 │  {signal_str}
-│  ⏱️  Próxima vela em: {next_candle_in:.0f}s
+│  ⏱️  Próxima vela em : {next_candle_in:.0f}s
 └───────────────────────────────────────────────────────────┘""", flush=True)
 
 
@@ -234,17 +231,20 @@ class HLClient:
             "startTime": since, "endTime": now_ms,
         }}
         raw = self.info.post("/info", req)
-        keys = ["o", "h", "l", "c", "v", "t"]
-        arrs = {k: [] for k in keys}
+        o, h, l, c, v, t = [], [], [], [], [], []
         for candle in raw:
-            for k in keys:
-                arrs[k].append(float(candle[k]) if k != "t" else int(candle[k]))
-        return {"open": np.array(arrs["o"], dtype=float),
-                "high": np.array(arrs["h"], dtype=float),
-                "low":  np.array(arrs["l"], dtype=float),
-                "close":np.array(arrs["c"], dtype=float),
-                "volume":np.array(arrs["v"], dtype=float),
-                "time": np.array(arrs["t"])}
+            o.append(float(candle["o"]))
+            h.append(float(candle["h"]))
+            l.append(float(candle["l"]))
+            c.append(float(candle["c"]))
+            v.append(float(candle["v"]))
+            t.append(int(candle["t"]))
+        return {"open":   np.array(o, dtype=float),
+                "high":   np.array(h, dtype=float),
+                "low":    np.array(l, dtype=float),
+                "close":  np.array(c, dtype=float),
+                "volume": np.array(v, dtype=float),
+                "time":   np.array(t)}
 
     def get_balance(self) -> float:
         return float(self.info.user_state(CFG["account_address"])["crossMarginSummary"]["accountValue"])
@@ -254,8 +254,8 @@ class HLClient:
             if pos["position"]["coin"] == self.symbol:
                 size = float(pos["position"]["szi"])
                 if size != 0:
-                    return {"side": "long" if size > 0 else "short",
-                            "size": abs(size),
+                    return {"side":  "long" if size > 0 else "short",
+                            "size":  abs(size),
                             "entry": float(pos["position"]["entryPx"])}
         return None
 
@@ -270,20 +270,18 @@ class HLClient:
         return float(self.info.all_mids()[self.symbol])
 
     def place_market(self, is_buy: bool, size: float):
-        price = self._mid_price()
-        px = round(price * (1.0015 if is_buy else 0.9985), 2)
-        result = self.exchange.order(self.symbol, is_buy, size, px,
-                                     {"limit": {"tif": "Ioc"}}, reduce_only=False)
-        log.info(f"{'BUY' if is_buy else 'SELL'} MARKET | size={size} | ~px={px} | {result}")
-        return result
+        px = round(self._mid_price() * (1.0015 if is_buy else 0.9985), 2)
+        res = self.exchange.order(self.symbol, is_buy, size, px,
+                                  {"limit": {"tif": "Ioc"}}, reduce_only=False)
+        log.info(f"{'BUY' if is_buy else 'SELL'} MARKET | size={size} | ~px={px} | {res}")
+        return res
 
     def close_position(self, is_long: bool, size: float):
-        price = self._mid_price()
-        px = round(price * (0.998 if is_long else 1.002), 2)
-        result = self.exchange.order(self.symbol, not is_long, size, px,
-                                     {"limit": {"tif": "Ioc"}}, reduce_only=True)
-        log.info(f"CLOSE {'LONG' if is_long else 'SHORT'} | size={size} | ~px={px} | {result}")
-        return result
+        px = round(self._mid_price() * (0.998 if is_long else 1.002), 2)
+        res = self.exchange.order(self.symbol, not is_long, size, px,
+                                  {"limit": {"tif": "Ioc"}}, reduce_only=True)
+        log.info(f"CLOSE {'LONG' if is_long else 'SHORT'} | size={size} | ~px={px} | {res}")
+        return res
 
     def coin_decimals(self) -> int:
         for asset in self.info.meta()["universe"]:
@@ -300,9 +298,8 @@ class RiskManager:
         dist = abs(entry - sl) / entry
         if dist == 0:
             return 0.0
-        size = (balance * self.risk_pct / dist) / entry
         f = 10 ** decimals
-        return max(math.floor(size * f) / f, 10 ** (-decimals))
+        return max(math.floor((balance * self.risk_pct / dist / entry) * f) / f, 10**(-decimals))
 
 
 class SignalEngine:
@@ -311,7 +308,7 @@ class SignalEngine:
 
     def analyse(self, d) -> Dict[str, Any]:
         c = d["close"]
-        min_len = max(self.cfg["ema_fast"], self.cfg["ema_slow"], self.cfg["ema_trend"]) + 50
+        min_len = self.cfg["ema_trend"] + 50  # 233 + 50 = 283
         if len(c) < min_len:
             return {"signal": 0, "reason": f"dados insuficientes ({len(c)}/{min_len} candles)"}
 
@@ -320,7 +317,10 @@ class SignalEngine:
         if any(math.isnan(ind[k]) for k in ["rsi", "macd_hist", "stoch_k", "atr", "vwap"]):
             return {"signal": 0, "reason": "indicadores incompletos", "ind": ind}
 
-        bull = ind["price"] > ind["vwap"] and ind["ema_fast"] > ind["ema_slow"] > ind["ema_trend"]
+        # Cascata bullish: EMA8 > EMA21 > EMA55 > EMA233 + preco > VWAP
+        bull = (ind["price"] > ind["vwap"]
+                and ind["ema8"] > ind["ema_fast"] > ind["ema_slow"] > ind["ema_trend"])
+
         atr_mult = self.cfg.get("atr_mult", 1.5)
         rr       = self.cfg.get("rr", 2.0)
 
@@ -333,11 +333,12 @@ class SignalEngine:
             return {"signal": 1, "side": "long",
                     "sl": round(ind["price"] - risk, 2),
                     "tp": round(ind["price"] + risk * rr, 2),
-                    "reason": "trend bullish | RSI OK | MACD OK | StochRSI OS->UP",
+                    "reason": "EMA8>21>55>233 + VWAP | RSI OK | MACD OK | StochRSI OS->UP",
                     "ind": ind}
 
         if self.cfg.get("enable_shorts", False):
-            bear = ind["price"] < ind["vwap"] and ind["ema_fast"] < ind["ema_slow"] < ind["ema_trend"]
+            bear = (ind["price"] < ind["vwap"]
+                    and ind["ema8"] < ind["ema_fast"] < ind["ema_slow"] < ind["ema_trend"])
             short_ok = (bear
                         and ind["rsi"] < 55 and ind["rsi"] < ind["rsi_prev"]
                         and ind["macd_hist"] < 0 and ind["macd_hist"] < ind["macd_prev"]
@@ -347,7 +348,7 @@ class SignalEngine:
                 return {"signal": 1, "side": "short",
                         "sl": round(ind["price"] + risk, 2),
                         "tp": round(ind["price"] - risk * rr, 2),
-                        "reason": "trend bearish | RSI OK | MACD OK | StochRSI OB->DOWN",
+                        "reason": "EMA8<21<55<233 + VWAP | RSI OK | MACD OK | StochRSI OB->DOWN",
                         "ind": ind}
 
         return {"signal": 0, "reason": "sem confluência", "ind": ind}
@@ -369,6 +370,7 @@ class MomentumBot:
         log.info(f"  Timeframe  : {self.cfg['timeframe']}")
         log.info(f"  Leverage   : {self.cfg['leverage']}x")
         log.info(f"  Risk/trade : {self.cfg['risk_pct']}%")
+        log.info(f"  EMAs       : 8 / 21 / 55 / 233")
         log.info("=" * 70)
 
     def run(self):
@@ -386,7 +388,6 @@ class MomentumBot:
     def _tick(self):
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         log.info(f"── Tick {ts} ─────────────────────────")
-
         data  = self.hl.get_candles(self.cfg["timeframe"], self.cfg.get("lookback", 500))
         price = float(data["close"][-1])
         log.info(f"Preço actual  : {price}")
@@ -404,7 +405,7 @@ class MomentumBot:
         if sig["signal"] == 1:
             balance = self.hl.get_balance()
             size    = self.risk.position_size(balance, price, sig["sl"], self.decimals)
-            log.info(f"Balance: {balance:.2f} USDC | Tamanho: {size} | SL: {sig['sl']} | TP: {sig['tp']}")
+            log.info(f"Balance: {balance:.2f} | Tamanho: {size} | SL: {sig['sl']} | TP: {sig['tp']}")
             if size > 0:
                 self.hl.place_market(sig["side"] == "long", size)
                 self.active_sl = sig["sl"]
@@ -412,52 +413,44 @@ class MomentumBot:
             else:
                 log.warning("Tamanho inválido — order ignorada.")
 
-        # — Monitor loop até próxima vela —
         self._monitor_loop(data, pos)
 
     def _monitor_loop(self, data_snapshot, pos_snapshot):
-        """Imprime o painel de monitorização a cada MONITOR_INTERVAL segundos
-        até à próxima vela."""
         tf_secs = {"1m": 60, "3m": 180, "5m": 300, "15m": 900,
                    "1h": 3600, "4h": 14400, "1d": 86400}
-        period  = tf_secs.get(self.cfg["timeframe"], 900)
-        now     = time.time()
+        period    = tf_secs.get(self.cfg["timeframe"], 900)
+        now       = time.time()
         candle_end = now + (period - (now % period)) + 2
-
-        # Pre-calcula indicadores do snapshot actual
-        min_len = max(self.cfg["ema_fast"], self.cfg["ema_slow"], self.cfg["ema_trend"]) + 50
-        has_ind = len(data_snapshot["close"]) >= min_len
+        min_len   = self.cfg["ema_trend"] + 50
+        has_ind   = len(data_snapshot["close"]) >= min_len
 
         while True:
             remaining = candle_end - time.time()
             if remaining <= 0:
                 break
-
-            # Actualiza preço em tempo real
             try:
                 live_price = float(self.hl.info.all_mids()[self.cfg["symbol"]])
-                # Actualiza último close no snapshot para indicadores
                 data_snapshot["close"][-1] = live_price
             except Exception:
-                live_price = float(data_snapshot["close"][-1])
+                pass
 
             if has_ind:
                 try:
                     ind = compute_indicators(data_snapshot, self.cfg)
-                    # Actualiza posição
                     pos = self.hl.get_position()
                     print_monitor(ind, pos, self.cfg, remaining)
                 except Exception as e:
                     log.debug(f"Monitor error: {e}")
             else:
-                print(f"\r  💰 {self.cfg['symbol']} = {live_price}  |  A carregar indicadores...  "
+                price = float(data_snapshot["close"][-1])
+                print(f"\r  💰 {self.cfg['symbol']} = {price}  |  A carregar indicadores... "
                       f"Próxima vela em {remaining:.0f}s", end="", flush=True)
 
             time.sleep(MONITOR_INTERVAL)
 
     def _manage_position(self, pos, price):
         if self.active_sl is None or self.active_tp is None:
-            log.warning("SL/TP não definidos para posição activa")
+            log.warning("SL/TP não definidos")
             return
         is_long = pos["side"] == "long"
         if (is_long and price >= self.active_tp) or (not is_long and price <= self.active_tp):
